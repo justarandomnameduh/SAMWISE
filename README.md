@@ -70,6 +70,20 @@ pip install torch==2.3.1 torchvision==0.18.1 --index-url https://download.pytorc
 pip install -r requirements.txt
 ```
 
+## 🧪 Fork-Local Reproduction Helpers
+
+This fork adds a thin local reproduction layer so the repo can be edited locally,
+pushed to GitHub, and then pulled on a GPU machine for the actual runs.
+
+Key helpers:
+
+- `bash tools/prepare_local_rvos_data.sh --dataset-root /path/to/dataset`
+- `bash ckpt.sh`
+- `bash samwise_inference.sh --dataset-root /path/to/dataset --version roberta_repro`
+
+For a concrete end-to-end runbook, see [MANUAL.md](MANUAL.md). For future-session
+operational guidance, see [AGENTS.md](AGENTS.md).
+
 ## 🎥 Referring Video Object Segmentation (RVOS)  
 
 **Reproducing Our Results**: Below, we provide the ```model weights``` to replicate the results of our paper.
