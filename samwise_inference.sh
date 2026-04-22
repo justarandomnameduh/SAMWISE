@@ -331,7 +331,9 @@ Per-annotator summary:
 ## Artifacts
 
 - DAVIS predictions: `{davis_root}`
+- DAVIS overlays: `{os.path.join(output_root, "davis", version, "overlay_videos")}`
 - MeViS logs: `{mevis_log}`
+- MeViS overlays: `{os.path.join(output_root, "mevis", version, "overlay_videos")}`
 - JSON summary: `{summary_json_path}`
 """
 

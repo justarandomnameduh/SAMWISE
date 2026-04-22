@@ -32,6 +32,39 @@ np.bool = np.bool_
 # colormap
 color_list = colormap()
 color_list = color_list.astype('uint8').tolist()
+OVERLAY_FPS = 10
+
+
+def blend_mask(image_rgb, mask, color):
+    output = image_rgb.copy()
+    mask = mask.astype(bool)
+    if mask.any():
+        output[mask] = output[mask] * 0.25 + np.array(color) * 0.75
+    return output.astype(np.uint8)
+
+
+def write_video(frames_rgb, output_path, fps=OVERLAY_FPS):
+    import cv2
+
+    if not frames_rgb:
+        raise ValueError(f"No frames to write for {output_path}")
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    height, width = frames_rgb[0].shape[:2]
+    writer = cv2.VideoWriter(
+        output_path,
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps,
+        (width, height),
+    )
+    if not writer.isOpened():
+        raise RuntimeError(f"Could not open video writer for {output_path}")
+
+    try:
+        for frame_rgb in frames_rgb:
+            writer.write(cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR))
+    finally:
+        writer.release()
 
 def main(args):
     print("Inference only supports for batch size = 1")
@@ -103,6 +136,7 @@ def eval_davis(args, model, save_path_prefix):
     # save path
     save_path_prefix = os.path.join(save_path_prefix, "eval_davis", args.split)
     os.makedirs(save_path_prefix, exist_ok=True)
+    overlay_root = os.path.join(args.output_dir, "overlay_videos")
 
     # load data
     root = Path(args.davis_path)  # data/ref-davis
@@ -116,7 +150,7 @@ def eval_davis(args, model, save_path_prefix):
     print('Start inference')
     sub_video_list = video_list
 
-    sub_processor(args, model, data, save_path_prefix, img_folder, sub_video_list)
+    sub_processor(args, model, data, save_path_prefix, overlay_root, img_folder, sub_video_list)
 
     for annotator in range(4):
         args.results_path = os.path.join(save_path_prefix, f"anno_{annotator}")
@@ -128,7 +162,7 @@ def eval_davis(args, model, save_path_prefix):
     print(f"Total inference time: {total_time:.2f} s")
 
 
-def sub_processor(args, model, data, save_path_prefix, img_folder, video_list):
+def sub_processor(args, model, data, save_path_prefix, overlay_root, img_folder, video_list):
     progress = tqdm(
             total=len(video_list),
             ncols=0
@@ -220,6 +254,21 @@ def sub_processor(args, model, data, save_path_prefix, img_folder, video_list):
                 img_E.putpalette(palette)
                 if utils.is_main_process():
                     img_E.save(os.path.join(anno_save_path, '{:05d}.png'.format(f)))
+
+            rendered_frames = []
+            for frame_index, frame_name in enumerate(data[video]["frames"]):
+                image_path = os.path.join(img_folder, video, frame_name + ".jpg")
+                image_rgb = np.asarray(Image.open(image_path).convert("RGB"))
+                frame_rgb = image_rgb.copy()
+                object_ids = [object_id for object_id in np.unique(out_masks[frame_index]) if object_id != 0]
+                for object_id in object_ids:
+                    color = color_list[(int(object_id) - 1) % len(color_list)]
+                    frame_rgb = blend_mask(frame_rgb, out_masks[frame_index] == object_id, color)
+                rendered_frames.append(frame_rgb)
+            write_video(
+                rendered_frames,
+                os.path.join(overlay_root, f"anno_{anno_id}", f"{video}.mp4"),
+            )
         progress.update(1)
 
 def eval_davis_compute_metrics(args):

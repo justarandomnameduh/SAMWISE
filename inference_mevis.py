@@ -30,6 +30,39 @@ from datasets.transform_utils import vis_add_mask
 # colormap
 color_list = colormap()
 color_list = color_list.astype('uint8').tolist()
+OVERLAY_FPS = 10
+
+
+def blend_mask(image_rgb, mask, color):
+    output = image_rgb.copy()
+    mask = mask.astype(bool)
+    if mask.any():
+        output[mask] = output[mask] * 0.25 + np.array(color) * 0.75
+    return output.astype(np.uint8)
+
+
+def write_video(frames_rgb, output_path, fps=OVERLAY_FPS):
+    import cv2
+
+    if not frames_rgb:
+        raise ValueError(f"No frames to write for {output_path}")
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    height, width = frames_rgb[0].shape[:2]
+    writer = cv2.VideoWriter(
+        output_path,
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps,
+        (width, height),
+    )
+    if not writer.isOpened():
+        raise RuntimeError(f"Could not open video writer for {output_path}")
+
+    try:
+        for frame_rgb in frames_rgb:
+            writer.write(cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR))
+    finally:
+        writer.release()
 
 
 def main(args):
@@ -51,6 +84,8 @@ def main(args):
     output_dir = args.output_dir
     save_path_prefix = os.path.join(output_dir, 'Annotations')
     os.makedirs(save_path_prefix, exist_ok=True)
+    overlay_video_root = os.path.join(output_dir, 'overlay_videos')
+    os.makedirs(overlay_video_root, exist_ok=True)
     args.log_file = join(args.output_dir, 'log.txt')
     with open(args.log_file, 'w') as fp:
         fp.writelines(" ".join(sys.argv)+'\n')
@@ -90,7 +125,14 @@ def main(args):
 
 
     print('Start inference')
-    result = eval_mevis(args, model, save_path_prefix, save_visualize_path_prefix, split=split)
+    result = eval_mevis(
+        args,
+        model,
+        save_path_prefix,
+        overlay_video_root,
+        save_visualize_path_prefix,
+        split=split,
+    )
 
     if args.split == 'valid_u':
         J_score, F_score, JF = result[0], result[1], result[2]
@@ -104,7 +146,7 @@ def main(args):
     print("Total inference time: %.4f s" %(total_time))
 
 
-def eval_mevis(args, model, save_path_prefix, save_visualize_path_prefix, split='valid_u'):
+def eval_mevis(args, model, save_path_prefix, overlay_video_root, save_visualize_path_prefix, split='valid_u'):
     # load data
     root = Path(args.mevis_path)
     img_folder = join(root, split, "JPEGImages")
@@ -189,6 +231,17 @@ def eval_mevis(args, model, save_path_prefix, save_visualize_path_prefix, split=
                 mask = Image.fromarray(mask * 255).convert('L')
                 save_file = os.path.join(save_path, frame_name + ".png")
                 mask.save(save_file)
+
+            rendered_frames = []
+            color = color_list[i % len(color_list)]
+            for frame_index, frame_name in enumerate(frames):
+                image_path = os.path.join(img_folder, video_name, frame_name + '.jpg')
+                image_rgb = np.asarray(Image.open(image_path).convert('RGB'))
+                rendered_frames.append(blend_mask(image_rgb, all_pred_masks[frame_index], color))
+            write_video(
+                rendered_frames,
+                os.path.join(overlay_video_root, video_name, f"{exp_id}.mp4"),
+            )
 
             # load GTs
             if args.split == 'valid_u':
