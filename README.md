@@ -80,6 +80,7 @@ Key helpers:
 - `bash tools/prepare_local_rvos_data.sh --dataset-root /path/to/dataset`
 - `bash ckpt.sh`
 - `bash samwise_inference.sh --dataset-root /path/to/dataset --version roberta_repro`
+- `python export_overlay_videos.py --version roberta_repro`
 
 For a concrete end-to-end runbook, see [MANUAL.md](MANUAL.md). For future-session
 operational guidance, see [AGENTS.md](AGENTS.md).

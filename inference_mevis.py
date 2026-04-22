@@ -178,7 +178,18 @@ def eval_mevis(args, model, save_path_prefix, save_visualize_path_prefix, split=
 
             # store the video results
             all_pred_masks = torch.cat(all_pred_masks, dim=0).numpy()  # (video_len, h, w)
-                        
+
+            # save binary image predictions for every split so downstream tooling
+            # can render overlays without rerunning inference.
+            save_path = join(save_path_prefix, video_name, exp_id)
+            os.makedirs(save_path, exist_ok=True)
+            for j in range(video_len):
+                frame_name = frames[j]
+                mask = all_pred_masks[j].astype(np.float32)
+                mask = Image.fromarray(mask * 255).convert('L')
+                save_file = os.path.join(save_path, frame_name + ".png")
+                mask.save(save_file)
+
             # load GTs
             if args.split == 'valid_u':
                 h, w = all_pred_masks.shape[-2:]
@@ -195,16 +206,6 @@ def eval_mevis(args, model, save_path_prefix, save_visualize_path_prefix, split=
                 # print(f'J {j} & F {f}')
                 out_dict[exp] = [j, f]
                 out_dict_per_vid[exp] = [j, f]
-            else:
-                # save binary image
-                save_path = join(save_path_prefix, video_name, exp_id)
-                os.makedirs(save_path, exist_ok=True)
-                for j in range(video_len):
-                    frame_name = frames[j]
-                    mask = all_pred_masks[j].astype(np.float32) 
-                    mask = Image.fromarray(mask * 255).convert('L')
-                    save_file = os.path.join(save_path, frame_name + ".png")
-                    mask.save(save_file)
                 
             if args.visualize:
                 for t, frame in enumerate(frames):

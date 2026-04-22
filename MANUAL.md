@@ -86,8 +86,28 @@ Main artifacts:
 - summary json: `output/reports/roberta_repro_summary.json`
 - DAVIS logs: `output/logs/roberta_repro/davis_inference.log`
 - MeViS logs: `output/logs/roberta_repro/mevis_inference.log`
+- DAVIS predictions: `output/davis/roberta_repro/eval_davis/valid`
+- MeViS predictions: `output/mevis/roberta_repro/Annotations`
 
-## 7. Reference targets
+## 7. Export overlay videos after inference
+
+This is a separate postprocess step. It does not rerun the model.
+
+```bash
+cd /path/to/SAMWISE
+conda activate samwise
+
+python export_overlay_videos.py \
+  --version roberta_repro \
+  --output-root /path/to/SAMWISE/output
+```
+
+Output roots:
+
+- DAVIS: `output/davis/roberta_repro/overlay_videos/anno_<id>/<video>.mp4`
+- MeViS: `output/mevis/roberta_repro/overlay_videos/<video>/<exp_id>.mp4`
+
+## 8. Reference targets
 
 Ref-DAVIS17, from the CVPR 2025 paper:
 
