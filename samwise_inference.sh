@@ -220,6 +220,7 @@ davis_target = {"J": 67.4, "F": 74.5, "J&F": 70.6}
 mevis_paper_target = {"J": 46.6, "F": 52.4, "J&F": 49.5}
 
 davis_root = os.path.join(output_root, "davis", version, "eval_davis", "valid")
+davis_predictions_root = os.path.join(output_root, "davis", version, "Annotations")
 mevis_root = os.path.join(output_root, "mevis", version)
 mevis_meta = os.path.join("data", "MeViS_release", "valid_u", "meta_expressions.json")
 
@@ -277,7 +278,8 @@ summary = {
         "paper_targets": davis_target,
         "per_annotator": davis_rows,
         "delta": {key: davis_metrics[key] - davis_target[key] for key in davis_metrics},
-        "predictions_root": davis_root,
+        "predictions_root": davis_predictions_root,
+        "eval_root": davis_root,
     },
     "mevis": {
         "split": "valid_u",
@@ -330,7 +332,8 @@ Per-annotator summary:
 
 ## Artifacts
 
-- DAVIS predictions: `{davis_root}`
+- DAVIS predictions: `{davis_predictions_root}`
+- DAVIS evaluation artifacts: `{davis_root}`
 - DAVIS overlays: `{os.path.join(output_root, "davis", version, "overlay_videos")}`
 - MeViS logs: `{mevis_log}`
 - MeViS overlays: `{os.path.join(output_root, "mevis", version, "overlay_videos")}`

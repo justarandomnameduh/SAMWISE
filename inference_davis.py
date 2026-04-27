@@ -66,6 +66,58 @@ def write_video(frames_rgb, output_path, fps=OVERLAY_FPS):
     finally:
         writer.release()
 
+
+def write_manifest(path, entries):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(entries, handle, indent=2)
+
+
+def load_palette(davis_path):
+    davis_root = Path(davis_path) / "DAVIS"
+    for pattern in ("Annotations_unsupervised/480p/*/*.png", "Annotations/480p/*/*.png"):
+        for candidate in davis_root.glob(pattern):
+            return Image.open(candidate).getpalette()
+    return None
+
+
+def read_expression_mask(results_path, video, exp_id, frame_name):
+    mask_path = Path(results_path) / video / str(exp_id) / f"{frame_name}.png"
+    if not mask_path.exists():
+        raise FileNotFoundError(f"Missing DAVIS expression mask: {mask_path}")
+    return np.array(Image.open(mask_path).convert("L")) > 0
+
+
+def reconstruct_davis_annotator_results(results_path, data, output_path, davis_path, num_anno=4):
+    palette = load_palette(davis_path)
+    output_path = Path(output_path)
+    for anno_id in range(num_anno):
+        anno_root = output_path / f"anno_{anno_id}"
+        anno_root.mkdir(parents=True, exist_ok=True)
+        for video, video_meta in data.items():
+            expressions = video_meta["expressions"]
+            expression_ids = list(expressions.keys())
+            frames = video_meta["frames"]
+            num_obj = len(expression_ids) // num_anno
+            video_root = anno_root / video
+            video_root.mkdir(parents=True, exist_ok=True)
+            for frame_name in frames:
+                composite = None
+                for obj_id in range(num_obj):
+                    exp_id = expression_ids[obj_id * num_anno + anno_id]
+                    mask = read_expression_mask(results_path, video, exp_id, frame_name)
+                    if composite is None:
+                        composite = np.zeros(mask.shape, dtype=np.uint8)
+                    composite[mask] = obj_id + 1
+                if composite is None:
+                    raise RuntimeError(f"No expressions found for DAVIS video: {video}")
+                image = Image.fromarray(composite)
+                if palette:
+                    image.putpalette(palette)
+                image.save(video_root / f"{frame_name}.png")
+    return [output_path / f"anno_{idx}" for idx in range(num_anno)]
+
+
 def main(args):
     print("Inference only supports for batch size = 1")
     print(args)
@@ -134,7 +186,8 @@ def eval_davis(args, model, save_path_prefix):
     random.seed(seed)
 
     # save path
-    save_path_prefix = os.path.join(save_path_prefix, "eval_davis", args.split)
+    eval_output_path = os.path.join(save_path_prefix, "eval_davis", args.split)
+    save_path_prefix = os.path.join(save_path_prefix, "Annotations")
     os.makedirs(save_path_prefix, exist_ok=True)
     overlay_root = os.path.join(args.output_dir, "overlay_videos")
 
@@ -152,9 +205,9 @@ def eval_davis(args, model, save_path_prefix):
 
     sub_processor(args, model, data, save_path_prefix, overlay_root, img_folder, sub_video_list)
 
-    for annotator in range(4):
-        args.results_path = os.path.join(save_path_prefix, f"anno_{annotator}")
-        eval_davis_compute_metrics(args)
+    args.results_path = save_path_prefix
+    args.eval_output_path = eval_output_path
+    eval_davis_compute_metrics(args, data)
 
     end_time = time.time()
     total_time = end_time - start_time
@@ -167,10 +220,6 @@ def sub_processor(args, model, data, save_path_prefix, overlay_root, img_folder,
             total=len(video_list),
             ncols=0
         )
-
-    # get palette
-    palette_img = os.path.join(args.davis_path, "valid/Annotations/blackswan/00000.png")
-    palette = Image.open(palette_img).getpalette()
 
     # start inference
     model.eval()
@@ -192,18 +241,21 @@ def sub_processor(args, model, data, save_path_prefix, overlay_root, img_folder,
             meta["frames"] = data[video]["frames"]
             metas.append(meta)
         meta = metas
+        annotation_manifest = [[os.path.join(item["exp_id"]), item["exp"]] for item in meta]
+        overlay_manifest = [[f"exp_{item['exp_id']}.mp4", item["exp"]] for item in meta]
+        write_manifest(os.path.join(save_path_prefix, video, "manifest.json"), annotation_manifest)
+        write_manifest(os.path.join(overlay_root, video, "manifest.json"), overlay_manifest)
 
         # since there are 4 annotations
         num_obj = num_expressions // 4
 
         # 2. for each annotator
         for anno_id in range(4):  # 4 annotators
-            anno_masks = []  # [num_obj+1, video_len, h, w], +1 for background
-
             for obj_id in range(num_obj):
                 i = obj_id * 4 + anno_id
                 video_name = meta[i]["video"]
                 exp = meta[i]["exp"]
+                exp_id = meta[i]["exp_id"]
                 frames = meta[i]["frames"]
 
                 all_pred_masks = []
@@ -231,55 +283,40 @@ def sub_processor(args, model, data, save_path_prefix, overlay_root, img_folder,
                     all_pred_masks.append(pred_masks)
 
                 all_pred_masks = torch.cat(all_pred_masks, dim=0)  # (video_len, h, w)
-                anno_masks.append(all_pred_masks)
+                binary_pred_masks = (all_pred_masks > args.threshold).detach().cpu().numpy().astype(np.uint8)
+                exp_save_path = os.path.join(save_path_prefix, video_name, exp_id)
+                os.makedirs(exp_save_path, exist_ok=True)
+                if utils.is_main_process():
+                    for frame_index, frame_name in enumerate(frames):
+                        mask = Image.fromarray(binary_pred_masks[frame_index] * 255).convert("L")
+                        mask.save(os.path.join(exp_save_path, frame_name + ".png"))
 
-            # handle a complete image (all objects of a annotator)
-            anno_masks = torch.stack(anno_masks)  # [num_obj, video_len, h, w]
-            t, h, w = anno_masks.shape[-3:]
-            anno_masks[anno_masks < 0.5] = 0.0
-            background = 0.1 * torch.ones(1, t, h, w).to(args.device)
-            anno_masks = torch.cat([background, anno_masks], dim=0)  # [num_obj+1, video_len, h, w]
-            out_masks = torch.argmax(anno_masks, dim=0)  # int, the value indicate which object, [video_len, h, w]
+                rendered_frames = []
+                color = color_list[i % len(color_list)]
+                for frame_index, frame_name in enumerate(frames):
+                    image_path = os.path.join(img_folder, video_name, frame_name + ".jpg")
+                    image_rgb = np.asarray(Image.open(image_path).convert("RGB"))
+                    rendered_frames.append(blend_mask(image_rgb, binary_pred_masks[frame_index], color))
+                if utils.is_main_process():
+                    write_video(
+                        rendered_frames,
+                        os.path.join(overlay_root, video_name, f"exp_{exp_id}.mp4"),
+                    )
 
-            out_masks = out_masks.detach().cpu().numpy().astype(np.uint8)  # [video_len, h, w]
-
-            # save results
-            anno_save_path = os.path.join(save_path_prefix, f"anno_{anno_id}", video)
             torch.cuda.empty_cache()
             import gc
             gc.collect()
-            os.makedirs(anno_save_path, exist_ok=True)
-            for f in range(out_masks.shape[0]):
-                img_E = Image.fromarray(out_masks[f])
-                img_E.putpalette(palette)
-                if utils.is_main_process():
-                    img_E.save(os.path.join(anno_save_path, '{:05d}.png'.format(f)))
-
-            rendered_frames = []
-            for frame_index, frame_name in enumerate(data[video]["frames"]):
-                image_path = os.path.join(img_folder, video, frame_name + ".jpg")
-                image_rgb = np.asarray(Image.open(image_path).convert("RGB"))
-                frame_rgb = image_rgb.copy()
-                object_ids = [object_id for object_id in np.unique(out_masks[frame_index]) if object_id != 0]
-                for object_id in object_ids:
-                    color = color_list[(int(object_id) - 1) % len(color_list)]
-                    frame_rgb = blend_mask(frame_rgb, out_masks[frame_index] == object_id, color)
-                rendered_frames.append(frame_rgb)
-            write_video(
-                rendered_frames,
-                os.path.join(overlay_root, f"anno_{anno_id}", f"{video}.mp4"),
-            )
         progress.update(1)
 
-def eval_davis_compute_metrics(args):
+def evaluate_davis_annotator(args, anno_results_path, csv_name_global, csv_name_per_sequence):
     time_start = time.time()
     csv_name_global = f'global_results-{args.set}.csv'
     csv_name_per_sequence = f'per-sequence_results-{args.set}.csv'
     args.log_file = join(args.output_dir, 'log.txt')
-    print(f'using {args.results_path}')
+    print(f'using {anno_results_path}')
     # Check if the method has been evaluated before, if so read the results, otherwise compute the results
-    csv_name_global_path = os.path.join(args.results_path, csv_name_global)
-    csv_name_per_sequence_path = os.path.join(args.results_path, csv_name_per_sequence)
+    csv_name_global_path = os.path.join(anno_results_path, csv_name_global)
+    csv_name_per_sequence_path = os.path.join(anno_results_path, csv_name_per_sequence)
     if os.path.exists(csv_name_global_path) and os.path.exists(csv_name_per_sequence_path):
         print('Using precomputed results...')
         table_g = pd.read_csv(csv_name_global_path)
@@ -288,7 +325,7 @@ def eval_davis_compute_metrics(args):
         print(f'Evaluating sequences for the {args.task} task...')
         # Create dataset and evaluate
         dataset_eval = DAVISEvaluation(davis_root=args.davis_path + "/DAVIS", task=args.task, gt_set=args.set)
-        metrics_res = dataset_eval.evaluate(args.results_path)
+        metrics_res = dataset_eval.evaluate(str(anno_results_path))
         J, F = metrics_res['J'], metrics_res['F']
 
         # Generate dataframe for the general results
@@ -324,8 +361,35 @@ def eval_davis_compute_metrics(args):
     if utils.get_rank() == 0:
         with open(args.log_file, 'a') as fp:
             fp.write(table_seq.to_string(index=False) + '\n')
-            fp.write(str(g_measures) + '\n')
-            fp.write(str(g_res) + '\n\n')
+            fp.write(table_g.to_string(index=False) + '\n\n')
+    return table_g
+
+
+def eval_davis_compute_metrics(args, data):
+    eval_output_path = getattr(args, "eval_output_path", os.path.join(args.output_dir, "eval_davis", args.split))
+    print(f"Reconstructing DAVIS annotator composites from {args.results_path}")
+    print(f"Saving DAVIS evaluation artifacts to: {eval_output_path}")
+    anno_result_paths = reconstruct_davis_annotator_results(
+        args.results_path,
+        data,
+        eval_output_path,
+        args.davis_path,
+        num_anno=4,
+    )
+
+    csv_name_global = f'global_results-{args.set}.csv'
+    csv_name_per_sequence = f'per-sequence_results-{args.set}.csv'
+    all_results = []
+    for anno_results_path in anno_result_paths:
+        table_g = evaluate_davis_annotator(args, anno_results_path, csv_name_global, csv_name_per_sequence)
+        all_results.append(table_g)
+        print("\n")
+
+    all_results = pd.concat(all_results, axis=0, ignore_index=True)
+    all_results.index = [f'an{i}' for i in range(4)]
+    avg_results = pd.DataFrame([all_results.mean()], index=['avg'])
+    all_results = pd.concat([all_results, avg_results], axis=0, ignore_index=False)
+    print(all_results.to_string())
 
 
 if __name__ == '__main__':

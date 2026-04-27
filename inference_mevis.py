@@ -65,6 +65,12 @@ def write_video(frames_rgb, output_path, fps=OVERLAY_FPS):
         writer.release()
 
 
+def write_manifest(path, entries):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(entries, handle, indent=2)
+
+
 def main(args):
     args.batch_size = 1
     print("Inference only supports for batch size = 1") 
@@ -186,6 +192,10 @@ def eval_mevis(args, model, save_path_prefix, overlay_video_root, save_visualize
             meta["frames"] = data[video]["frames"]
             metas.append(meta)
         meta = metas
+        annotation_manifest = [[os.path.join(item["exp_id"]), item["exp"]] for item in meta]
+        overlay_manifest = [[f"{item['exp_id']}.mp4", item["exp"]] for item in meta]
+        write_manifest(os.path.join(save_path_prefix, video, "manifest.json"), annotation_manifest)
+        write_manifest(os.path.join(overlay_video_root, video, "manifest.json"), overlay_manifest)
 
         # 2. For each expression
         for i in range(num_expressions):
