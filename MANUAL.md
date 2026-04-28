@@ -4,8 +4,8 @@ This fork adds a thin local reproduction layer around the official SAMWISE code 
 
 Assumed local source layout:
 
-- repo: `/home/uqqnguy9/phd/segmentation/SAMWISE`
-- sibling dataset root: `/home/uqqnguy9/phd/dataset`
+- repo: `/scratch/user/uqqnguy9/segmentation/SAMWISE`
+- sibling dataset root: `/scratch/user/uqqnguy9/dataset`
 
 On Bunya or another GPU machine, adapt the absolute paths to the active checkout.
 
