@@ -101,6 +101,12 @@ def get_args_parser():
                         help="Dataset split for evaluation")
     parser.add_argument('--visualize', action='store_true',
                         help="Enable mask visualization during inference")
+    parser.add_argument('--overlay_video_first_n', default=-1, type=int,
+                        help="0 disables overlay video export, -1 exports overlays for all selected videos")
+    parser.add_argument('--overlay_video_fps', default=10, type=int,
+                        help="FPS for generated overlay videos")
+    parser.add_argument('--video_first_n', default=0, type=int,
+                        help="0 uses the full dataset; positive values run only the first N videos")
     parser.add_argument('--eval_clip_window', default=8, type=int,
                         help="Frame window size for evaluation")
     parser.add_argument('--set', type=str, default='val',
@@ -112,5 +118,3 @@ def get_args_parser():
                         help="Path to folder containing the sequences folders results")
 
     return parser
-
-

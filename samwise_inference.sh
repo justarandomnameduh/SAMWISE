@@ -10,6 +10,7 @@ VERSION="${VERSION:-roberta_repro}"
 SAM2_VERSION="${SAM2_VERSION:-base}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 EVAL_CLIP_WINDOW="${EVAL_CLIP_WINDOW:-8}"
+OVERLAY_VIDEO_FIRST_N="${OVERLAY_VIDEO_FIRST_N:--1}"
 
 DAVIS_CKPT="${DAVIS_CKPT:-$REPO_ROOT/ckpt/refdavis_refytvos_roberta_hiera_b.pth}"
 MEVIS_CKPT="${MEVIS_CKPT:-$REPO_ROOT/ckpt/mevis_roberta_hiera_b.pth}"
@@ -31,6 +32,8 @@ Options:
   --sam2-version NAME       SAM2 backbone: tiny|base|large. Default: $SAM2_VERSION
   --num-workers N           DataLoader workers. Default: $NUM_WORKERS
   --eval-clip-window N      Eval clip window. Default: $EVAL_CLIP_WINDOW
+  --overlay-video-first-n N Number of overlay videos to export. Use -1 for all selected videos.
+                            Default: $OVERLAY_VIDEO_FIRST_N
   --davis-ckpt PATH         Override DAVIS checkpoint path
   --mevis-ckpt PATH         Override MeViS checkpoint path
   --skip-ckpt               Skip checkpoint bootstrap
@@ -82,6 +85,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --eval-clip-window)
       EVAL_CLIP_WINDOW="$2"
+      shift 2
+      ;;
+    --overlay-video-first-n)
+      OVERLAY_VIDEO_FIRST_N="$2"
       shift 2
       ;;
     --davis-ckpt)
@@ -182,6 +189,7 @@ python "$REPO_ROOT/inference_davis.py" \
   --sam2_version "$SAM2_VERSION" \
   --num_workers "$NUM_WORKERS" \
   --eval_clip_window "$EVAL_CLIP_WINDOW" \
+  --overlay_video_first_n "$OVERLAY_VIDEO_FIRST_N" \
   --HSA \
   --use_cme_head \
   --no_distributed \
@@ -197,6 +205,7 @@ python "$REPO_ROOT/inference_mevis.py" \
   --sam2_version "$SAM2_VERSION" \
   --num_workers "$NUM_WORKERS" \
   --eval_clip_window "$EVAL_CLIP_WINDOW" \
+  --overlay_video_first_n "$OVERLAY_VIDEO_FIRST_N" \
   --HSA \
   --use_cme_head \
   --no_distributed \
@@ -219,7 +228,7 @@ output_root, version, report_path, summary_json_path = sys.argv[1:]
 davis_target = {"J": 67.4, "F": 74.5, "J&F": 70.6}
 mevis_paper_target = {"J": 46.6, "F": 52.4, "J&F": 49.5}
 
-davis_root = os.path.join(output_root, "davis", version, "eval_davis", "valid")
+davis_root = os.path.join(output_root, "davis", version, "Annotations")
 davis_predictions_root = os.path.join(output_root, "davis", version, "Annotations")
 mevis_root = os.path.join(output_root, "mevis", version)
 mevis_meta = os.path.join("data", "MeViS_release", "valid_u", "meta_expressions.json")

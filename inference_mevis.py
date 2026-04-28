@@ -4,6 +4,7 @@ Modified from DETR (https://github.com/facebookresearch/detr)
 '''
 import argparse
 import random
+import sys
 import time
 from pathlib import Path
 import numpy as np
@@ -25,6 +26,12 @@ from datasets.transform_utils import VideoEvalDataset
 from torch.utils.data import DataLoader
 from os.path import join
 from datasets.transform_utils import vis_add_mask
+
+SEGMENTATION_ROOT = Path(__file__).resolve().parents[1]
+if str(SEGMENTATION_ROOT) not in sys.path:
+    sys.path.insert(0, str(SEGMENTATION_ROOT))
+
+from generate_overlays import generate_overlay_video, plot_frame_metrics
 
 
 # colormap
@@ -69,6 +76,36 @@ def write_manifest(path, entries):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(entries, handle, indent=2)
+
+
+def output_root_from_dataset_dir(output_dir):
+    return Path(output_dir).resolve().parents[1]
+
+
+def generate_mevis_overlays(data, annotation_root, img_folder, overlay_root, video_sources, fps):
+    for video in video_sources:
+        expressions = data[video]["expressions"]
+        for exp_id, exp_meta in expressions.items():
+            generate_overlay_video(
+                os.path.join(img_folder, video),
+                os.path.join(annotation_root, video, exp_id),
+                os.path.join(overlay_root, video),
+                query=exp_meta["exp"],
+                output_name=f"exp_{exp_id}.mp4",
+                fps=fps,
+            )
+
+
+def save_mevis_metric_plot(pred_masks, gt_masks, query, output_path):
+    j_scores = db_eval_iou(gt_masks, pred_masks)
+    f_scores = db_eval_boundary(gt_masks, pred_masks)
+    plot_frame_metrics(
+        list(range(pred_masks.shape[0])),
+        [float(x) for x in j_scores],
+        [float(x) for x in f_scores],
+        query,
+        output_path,
+    )
 
 
 def main(args):
@@ -167,6 +204,15 @@ def eval_mevis(args, model, save_path_prefix, overlay_video_root, save_visualize
         gt_data = None
 
     video_list = list(data.keys())
+    if args.video_first_n > 0:
+        video_list = video_list[:args.video_first_n]
+        data = {video: data[video] for video in video_list}
+    if args.overlay_video_first_n < 0:
+        render_video_sources = video_list
+    elif args.overlay_video_first_n > 0:
+        render_video_sources = video_list[:args.overlay_video_first_n]
+    else:
+        render_video_sources = []
     progress = tqdm(
         total=len(video_list),
         ncols=0
@@ -193,7 +239,7 @@ def eval_mevis(args, model, save_path_prefix, overlay_video_root, save_visualize
             metas.append(meta)
         meta = metas
         annotation_manifest = [[os.path.join(item["exp_id"]), item["exp"]] for item in meta]
-        overlay_manifest = [[f"{item['exp_id']}.mp4", item["exp"]] for item in meta]
+        overlay_manifest = [[f"exp_{item['exp_id']}.mp4", item["exp"]] for item in meta]
         write_manifest(os.path.join(save_path_prefix, video, "manifest.json"), annotation_manifest)
         write_manifest(os.path.join(overlay_video_root, video, "manifest.json"), overlay_manifest)
 
@@ -242,17 +288,6 @@ def eval_mevis(args, model, save_path_prefix, overlay_video_root, save_visualize
                 save_file = os.path.join(save_path, frame_name + ".png")
                 mask.save(save_file)
 
-            rendered_frames = []
-            color = color_list[i % len(color_list)]
-            for frame_index, frame_name in enumerate(frames):
-                image_path = os.path.join(img_folder, video_name, frame_name + '.jpg')
-                image_rgb = np.asarray(Image.open(image_path).convert('RGB'))
-                rendered_frames.append(blend_mask(image_rgb, all_pred_masks[frame_index], color))
-            write_video(
-                rendered_frames,
-                os.path.join(overlay_video_root, video_name, f"{exp_id}.mp4"),
-            )
-
             # load GTs
             if args.split == 'valid_u':
                 h, w = all_pred_masks.shape[-2:]
@@ -264,11 +299,19 @@ def eval_mevis(args, model, save_path_prefix, overlay_video_root, save_visualize
                         if mask_rle:
                             gt_masks[frame_idx] += cocomask.decode(mask_rle)
 
-                j = db_eval_iou(gt_masks, all_pred_masks).mean()
-                f = db_eval_boundary(gt_masks, all_pred_masks).mean()
+                j_scores = db_eval_iou(gt_masks, all_pred_masks)
+                f_scores = db_eval_boundary(gt_masks, all_pred_masks)
+                j = j_scores.mean()
+                f = f_scores.mean()
                 # print(f'J {j} & F {f}')
                 out_dict[exp] = [j, f]
                 out_dict_per_vid[exp] = [j, f]
+                save_mevis_metric_plot(
+                    all_pred_masks,
+                    gt_masks,
+                    exp,
+                    os.path.join(output_root_from_dataset_dir(args.output_dir), "visualize", "mevis", args.name_exp, video_name, f"{exp_id}.png"),
+                )
                 
             if args.visualize:
                 for t, frame in enumerate(frames):
@@ -298,6 +341,17 @@ def eval_mevis(args, model, save_path_prefix, overlay_video_root, save_visualize
                     fp.writelines(out_str_vid + '\n')
             print('\n' + out_str + '\n' + out_str_vid)
         progress.update(1)
+
+    if render_video_sources:
+        print("Generating MeViS overlay videos...")
+        generate_mevis_overlays(
+            data,
+            save_path_prefix,
+            img_folder,
+            overlay_video_root,
+            render_video_sources,
+            args.overlay_video_fps,
+        )
 
     if args.split == 'valid_u':
         J_score, F_score, JF = get_current_metrics(out_dict)

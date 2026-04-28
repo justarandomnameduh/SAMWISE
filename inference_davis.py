@@ -26,8 +26,15 @@ import json
 import argparse
 from tqdm import tqdm
 from tools.colormap import colormap
+from tools.metrics import db_eval_boundary, db_eval_iou
 import opts
 np.bool = np.bool_
+
+SEGMENTATION_ROOT = Path(__file__).resolve().parents[1]
+if str(SEGMENTATION_ROOT) not in sys.path:
+    sys.path.insert(0, str(SEGMENTATION_ROOT))
+
+from generate_overlays import generate_overlay_video, plot_frame_metrics
 
 # colormap
 color_list = colormap()
@@ -73,6 +80,10 @@ def write_manifest(path, entries):
         json.dump(entries, handle, indent=2)
 
 
+def output_root_from_dataset_dir(output_dir):
+    return Path(output_dir).resolve().parents[1]
+
+
 def load_palette(davis_path):
     davis_root = Path(davis_path) / "DAVIS"
     for pattern in ("Annotations_unsupervised/480p/*/*.png", "Annotations/480p/*/*.png"):
@@ -116,6 +127,37 @@ def reconstruct_davis_annotator_results(results_path, data, output_path, davis_p
                     image.putpalette(palette)
                 image.save(video_root / f"{frame_name}.png")
     return [output_path / f"anno_{idx}" for idx in range(num_anno)]
+
+
+def save_davis_metric_plot(pred_masks, frames, gt_root, video, object_id, query, output_path):
+    j_scores = []
+    f_scores = []
+    for frame_idx, frame_name in enumerate(frames):
+        gt_path = os.path.join(gt_root, video, frame_name + ".png")
+        gt_mask = np.asarray(Image.open(gt_path)) == object_id
+        pred_mask = pred_masks[frame_idx].astype(bool)
+        j_scores.append(float(db_eval_iou(gt_mask, pred_mask)))
+        f_scores.append(float(db_eval_boundary(gt_mask, pred_mask)))
+    plot_frame_metrics(list(range(len(frames))), j_scores, f_scores, query, output_path)
+
+
+def generate_davis_overlays(data, annotation_root, img_folder, overlay_root, video_sources, fps):
+    for video in video_sources:
+        expressions = data[video]["expressions"]
+        expression_ids = list(expressions.keys())
+        for exp_index, exp_id in enumerate(expression_ids):
+            anno_id = exp_index % 4
+            object_id = exp_index // 4 + 1
+            query = expressions[exp_id]["exp"]
+            generate_overlay_video(
+                os.path.join(img_folder, video),
+                os.path.join(annotation_root, f"anno_{anno_id}", video),
+                os.path.join(overlay_root, video),
+                query=query,
+                output_name=f"exp_{exp_id}.mp4",
+                fps=fps,
+                mask_value=object_id,
+            )
 
 
 def main(args):
@@ -186,7 +228,6 @@ def eval_davis(args, model, save_path_prefix):
     random.seed(seed)
 
     # save path
-    eval_output_path = os.path.join(save_path_prefix, "eval_davis", args.split)
     save_path_prefix = os.path.join(save_path_prefix, "Annotations")
     os.makedirs(save_path_prefix, exist_ok=True)
     overlay_root = os.path.join(args.output_dir, "overlay_videos")
@@ -198,6 +239,15 @@ def eval_davis(args, model, save_path_prefix):
     with open(meta_file, "r") as f:
         data = json.load(f)["videos"]
     video_list = list(data.keys())
+    if args.video_first_n > 0:
+        video_list = video_list[:args.video_first_n]
+        data = {video: data[video] for video in video_list}
+    if args.overlay_video_first_n < 0:
+        render_video_sources = video_list
+    elif args.overlay_video_first_n > 0:
+        render_video_sources = video_list[:args.overlay_video_first_n]
+    else:
+        render_video_sources = []
 
     start_time = time.time()
     print('Start inference')
@@ -205,9 +255,23 @@ def eval_davis(args, model, save_path_prefix):
 
     sub_processor(args, model, data, save_path_prefix, overlay_root, img_folder, sub_video_list)
 
+    if render_video_sources:
+        print("Generating DAVIS overlay videos...")
+        generate_davis_overlays(
+            data,
+            save_path_prefix,
+            img_folder,
+            overlay_root,
+            render_video_sources,
+            args.overlay_video_fps,
+        )
+
+    if args.video_first_n > 0:
+        print("Skipping full DAVIS metrics for --video_first_n subset run.")
+        return
+
     args.results_path = save_path_prefix
-    args.eval_output_path = eval_output_path
-    eval_davis_compute_metrics(args, data)
+    eval_davis_compute_metrics(args)
 
     end_time = time.time()
     total_time = end_time - start_time
@@ -241,9 +305,7 @@ def sub_processor(args, model, data, save_path_prefix, overlay_root, img_folder,
             meta["frames"] = data[video]["frames"]
             metas.append(meta)
         meta = metas
-        annotation_manifest = [[os.path.join(item["exp_id"]), item["exp"]] for item in meta]
         overlay_manifest = [[f"exp_{item['exp_id']}.mp4", item["exp"]] for item in meta]
-        write_manifest(os.path.join(save_path_prefix, video, "manifest.json"), annotation_manifest)
         write_manifest(os.path.join(overlay_root, video, "manifest.json"), overlay_manifest)
 
         # since there are 4 annotations
@@ -251,6 +313,9 @@ def sub_processor(args, model, data, save_path_prefix, overlay_root, img_folder,
 
         # 2. for each annotator
         for anno_id in range(4):  # 4 annotators
+            anno_masks = []
+            anno_text = []
+            anno_exp_ids = []
             for obj_id in range(num_obj):
                 i = obj_id * 4 + anno_id
                 video_name = meta[i]["video"]
@@ -284,25 +349,33 @@ def sub_processor(args, model, data, save_path_prefix, overlay_root, img_folder,
 
                 all_pred_masks = torch.cat(all_pred_masks, dim=0)  # (video_len, h, w)
                 binary_pred_masks = (all_pred_masks > args.threshold).detach().cpu().numpy().astype(np.uint8)
-                exp_save_path = os.path.join(save_path_prefix, video_name, exp_id)
-                os.makedirs(exp_save_path, exist_ok=True)
                 if utils.is_main_process():
-                    for frame_index, frame_name in enumerate(frames):
-                        mask = Image.fromarray(binary_pred_masks[frame_index] * 255).convert("L")
-                        mask.save(os.path.join(exp_save_path, frame_name + ".png"))
-
-                rendered_frames = []
-                color = color_list[i % len(color_list)]
-                for frame_index, frame_name in enumerate(frames):
-                    image_path = os.path.join(img_folder, video_name, frame_name + ".jpg")
-                    image_rgb = np.asarray(Image.open(image_path).convert("RGB"))
-                    rendered_frames.append(blend_mask(image_rgb, binary_pred_masks[frame_index], color))
-                if utils.is_main_process():
-                    write_video(
-                        rendered_frames,
-                        os.path.join(overlay_root, video_name, f"exp_{exp_id}.mp4"),
+                    plot_root = os.path.join(output_root_from_dataset_dir(args.output_dir), "visualize", "davis", args.name_exp, video_name)
+                    save_davis_metric_plot(
+                        binary_pred_masks,
+                        frames,
+                        os.path.join(args.davis_path, "valid", "Annotations"),
+                        video_name,
+                        obj_id + 1,
+                        exp,
+                        os.path.join(plot_root, f"{exp_id}.png"),
                     )
+                anno_masks.append(all_pred_masks)
+                anno_text.append(exp)
+                anno_exp_ids.append(exp_id)
 
+            anno_masks = torch.stack(anno_masks)  # [num_obj, video_len, h, w]
+            t, h, w = anno_masks.shape[-3:]
+            anno_masks[anno_masks < 0.5] = 0.0
+            background = 0.1 * torch.ones(1, t, h, w).to(args.device)
+            anno_masks = torch.cat([background, anno_masks], dim=0)
+            out_masks = torch.argmax(anno_masks, dim=0).detach().cpu().numpy().astype(np.uint8)
+            anno_save_path = os.path.join(save_path_prefix, f"anno_{anno_id}", video)
+            os.makedirs(anno_save_path, exist_ok=True)
+            if utils.is_main_process():
+                for frame_index in range(out_masks.shape[0]):
+                    mask = Image.fromarray(out_masks[frame_index])
+                    mask.save(os.path.join(anno_save_path, "{:05d}.png".format(frame_index)))
             torch.cuda.empty_cache()
             import gc
             gc.collect()
@@ -365,17 +438,20 @@ def evaluate_davis_annotator(args, anno_results_path, csv_name_global, csv_name_
     return table_g
 
 
-def eval_davis_compute_metrics(args, data):
+def eval_davis_compute_metrics(args, data=None):
     eval_output_path = getattr(args, "eval_output_path", os.path.join(args.output_dir, "eval_davis", args.split))
-    print(f"Reconstructing DAVIS annotator composites from {args.results_path}")
-    print(f"Saving DAVIS evaluation artifacts to: {eval_output_path}")
-    anno_result_paths = reconstruct_davis_annotator_results(
-        args.results_path,
-        data,
-        eval_output_path,
-        args.davis_path,
-        num_anno=4,
-    )
+    if all(os.path.isdir(os.path.join(args.results_path, f"anno_{idx}")) for idx in range(4)):
+        anno_result_paths = [os.path.join(args.results_path, f"anno_{idx}") for idx in range(4)]
+    else:
+        print(f"Reconstructing DAVIS annotator composites from {args.results_path}")
+        print(f"Saving DAVIS evaluation artifacts to: {eval_output_path}")
+        anno_result_paths = reconstruct_davis_annotator_results(
+            args.results_path,
+            data,
+            eval_output_path,
+            args.davis_path,
+            num_anno=4,
+        )
 
     csv_name_global = f'global_results-{args.set}.csv'
     csv_name_per_sequence = f'per-sequence_results-{args.set}.csv'

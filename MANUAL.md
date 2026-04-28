@@ -87,12 +87,13 @@ Main artifacts:
 - DAVIS logs: `output/logs/roberta_repro/davis_inference.log`
 - MeViS logs: `output/logs/roberta_repro/mevis_inference.log`
 - DAVIS predictions: `output/davis/roberta_repro/Annotations`
-- DAVIS evaluation artifacts: `output/davis/roberta_repro/eval_davis/valid`
+- DAVIS evaluation CSVs: `output/davis/roberta_repro/Annotations/anno_<id>/global_results-val.csv`
 - MeViS predictions: `output/mevis/roberta_repro/Annotations`
 - DAVIS overlay videos: `output/davis/roberta_repro/overlay_videos/<video>/exp_<exp_id>.mp4`
-- MeViS overlay videos: `output/mevis/roberta_repro/overlay_videos/<video>/<exp_id>.mp4`
+- MeViS overlay videos: `output/mevis/roberta_repro/overlay_videos/<video>/exp_<exp_id>.mp4`
+- metric plots: `output/visualize/<dataset>/roberta_repro/<video>/<exp_id>.png`
 
-Prediction and overlay video folders include per-video `manifest.json` files with `[relative_path, query]` entries. Overlay videos are generated automatically during inference for all DAVIS and MeViS outputs.
+Overlay video folders include per-video `manifest.json` files with `[relative_path, query]` entries. Overlay videos are generated automatically during inference for all DAVIS and MeViS outputs unless `--overlay-video-first-n 0` is passed.
 
 ## 7. Reference targets
 
